@@ -1,0 +1,44 @@
+#!/bin/sh
+# Prove every undefined dynamic import of each binary exists in the 10.9 SDK's
+# library stubs OR is on the weak allowlist. Version-INDEPENDENT: no committed
+# per-version reference needed. Fail-closed.
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$(dirname "$0")/common.sh"
+export LC_ALL=C
+# Always verify against the SAME pinned 10.9 SDK, on box and CI alike — it is the
+# reference contract, not the build host's system libs.
+SDK=$(sh "$(dirname "$0")/fetch_10_9_sdk.sh")
+[ -d "$SDK" ] || mvd_die "no pinned 10.9 SDK at $SDK"
+# The 10.9 SDK ships Mach-O stub dylibs/frameworks (pre-.tbd): extract DEFINED
+# (address-bearing) symbols via nm. Also handle .tbd text stubs if a future SDK
+# bump uses them. Skip non-binaries.
+STUBSYMS=$(mktemp "${TMPDIR:-/tmp}/mvd-stubsyms.XXXXXX"); trap 'rm -f "$STUBSYMS"' EXIT
+find "$SDK/usr/lib" "$SDK/System/Library/Frameworks" -type f 2>/dev/null | while IFS= read -r f; do
+  case "$f" in
+    *.tbd) grep -hoE '_[A-Za-z0-9_$]+' "$f" ;;
+    *.h|*.hpp|*.plist|*.strings|*.modulemap|*.nib|*.png|*.a) : ;;
+    *) nm -g "$f" 2>/dev/null | awk '$1 ~ /^[0-9a-fA-F]+$/ {print $NF}' ;;
+  esac
+done | sort -u > "$STUBSYMS"
+[ -s "$STUBSYMS" ] || mvd_die "no SDK stub symbols extracted from $SDK"
+ALLOW="$(dirname "$0")/weak_allowlist.txt"
+[ -f "$ALLOW" ] || mvd_die "missing allowlist $ALLOW"
+fail=0; checked=0
+for b in "$@"; do
+  [ -f "$b" ] || mvd_die "missing binary $b"
+  checked=$((checked+1))
+  undef=$(nm -u "$b" 2>/dev/null | awk '{print $NF}' | sort -u)
+  [ -n "$undef" ] || mvd_die "no undefined symbols measured for $b"
+  for s in $undef; do
+    grep -qx "$s" "$STUBSYMS" && continue
+    grep -qxF "$s" "$ALLOW" 2>/dev/null && continue
+    echo "sdk coverage: $b imports '$s' not in 10.9 SDK and not allowlisted" >&2
+    fail=1
+  done
+done
+[ "$checked" -gt 0 ] || mvd_die "no binaries checked"
+if [ "$fail" = 0 ]; then
+  echo "sdk coverage: $checked binaries only import 10.9-available symbols"
+else
+  exit 1
+fi

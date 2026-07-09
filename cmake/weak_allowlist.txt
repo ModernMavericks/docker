@@ -1,0 +1,8 @@
+# Undefined imports allowed to be absent on 10.9 because Go runtime-guards them
+# behind an OS-version check and never calls them on 10.9 (dynamic_lookup).
+_SecTrustEvaluateWithError
+_SecTrustCopyCertificateChain
+# osinit_hack_trampoline references this (absent < macOS 10.12). Safe only because
+# the go126 patch-src_runtime_sys__darwin.go version-guards the call so it never
+# runs on 10.9; imported but never bound. Remove this line if that patch is dropped.
+_notify_is_valid_token
