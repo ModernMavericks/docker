@@ -1,0 +1,76 @@
+name: release
+
+# Build the 10.9-compatible docker CLI on a modern macOS runner and, on v* tags,
+# publish it. The build+gate step runs the SAME cmake build + ctest that the Tahoe
+# dry run runs locally, so a green local dry run predicts a green CI run. The single
+# publish job is the ONLY writer to Releases and needs build-macos, so any gate
+# failure means no release (never partial).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:        # manual runs produce an artifact, not a release
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version = VERSION file (tag must match)
+        id: ver
+        run: |
+          VER=$(cat VERSION)
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$VER" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} != v$VER (VERSION file)"; exit 1; fi
+
+      # ⚠️ BLOCKED / PLACEHOLDER
+      # actions/setup-go installs STOCK Go, which produces a darwin/amd64 binary that
+      # dyld-faults on 10.9 (osinit_hack -> notify_is_valid_token). This step MUST become
+      # "pkg_add a pkgsrc bootstrap kit + the PATCHED go126 binary package", which is
+      # blocked on schmonz's Mavericks/TLS Go patches being upstreamed to pkgsrc and its
+      # binary repos rebuilding. Until then this workflow cannot produce a working release.
+      - name: Pin Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Cache the MacOSX10.9 SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sdk-cache
+          key: macosx10.9-sdk-${{ hashFiles('cmake/fetch_10_9_sdk.sh') }}
+
+      - name: Build + gate (the SAME cmake build the Tahoe dry run runs)
+        env:
+          MVD_SDK_CACHE: ${{ github.workspace }}/.sdk-cache
+        run: |
+          cmake --preset cross
+          cmake --build --preset cross
+          ctest --preset cross
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-mavericks
+          path: build-cross/docker-cli/docker
+
+  # All-or-nothing publish: the ONLY job that writes to Releases, gated on the build.
+  publish:
+    needs: [build-macos]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: dist/docker

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^components/[^/]+/version$"],
+      "matchStrings": ["REPO=(?<packageName>\\S+)\\.git\\nREF=(?<currentValue>\\S+)"],
+      "datasourceTemplate": "git-refs",
+      "versioningTemplate": "semver"
+    }
+  ]
+}
