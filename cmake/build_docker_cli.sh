@@ -16,12 +16,19 @@ mkdir -p "$OUT"
 cd "$SRC"
 ln -sf vendor.mod go.mod
 ln -sf vendor.sum go.sum
+# On NFS, macOS stores xattrs as AppleDouble sidecars; untracked ._go.* files
+# make git report the pinned clone dirty and Go stamps ".dirty" into Version.
+rm -f ._go.mod ._go.sum
 COMMIT=$(git rev-parse --short HEAD)
 export CGO_ENABLED=1 CC GOARCH=amd64
 export CGO_CFLAGS="-mmacosx-version-min=10.9 $ARCH_FLAGS $SDK_FLAGS"
-export CGO_LDFLAGS="$LS_A -mmacosx-version-min=10.9 $ARCH_FLAGS $SDK_FLAGS -Wl,-undefined,dynamic_lookup"
+# Shim goes in ONCE via -extldflags (as in the other Go components): CGO_LDFLAGS is
+# recorded per cgo package, so the archive lands on the link line repeatedly and
+# modern ld warns about duplicate libraries.
+export CGO_LDFLAGS="-mmacosx-version-min=10.9 $ARCH_FLAGS $SDK_FLAGS -Wl,-undefined,dynamic_lookup"
 "$GO" build -mod=vendor \
-  -ldflags "-X github.com/docker/cli/cli/version.Version=$VER \
+  -ldflags "-linkmode=external -extldflags \"$LS_A\" \
+            -X github.com/docker/cli/cli/version.Version=$VER \
             -X github.com/docker/cli/cli/version.GitCommit=$COMMIT \
             -X github.com/docker/cli/cli/version.BuildTime=mavericks-$("$GO" version | awk '{print $3}')" \
   -o "$OUT/docker" ./cmd/docker
