@@ -35,7 +35,7 @@ jobs:
       # blocked on schmonz's Mavericks/TLS Go patches being upstreamed to pkgsrc and its
       # binary repos rebuilding. Until then this workflow cannot produce a working release.
       - name: Pin Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
 
