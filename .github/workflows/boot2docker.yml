@@ -26,7 +26,7 @@ jobs:
           cmake --preset iso
           cmake --build --preset iso
           ctest --preset iso --output-on-failure
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: boot2docker-iso
           path: build-iso/boot2docker/boot2docker.iso
