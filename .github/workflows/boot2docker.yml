@@ -20,7 +20,7 @@ jobs:
   build-iso:
     runs-on: ubuntu-latest   # native x86_64 Docker; separate from the macos-26 Mac build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build + gate (same cmake iso build the box runs)
         run: |
           cmake --preset iso
