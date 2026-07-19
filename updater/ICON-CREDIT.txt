@@ -1,0 +1,8 @@
+mavericks-docker-updater.icns is a NEUTRAL PLACEHOLDER — a solid-color icon generated
+at build-authoring time (no third-party artwork, no trademark). It exists so the updater
+.app builds and ships end-to-end now.
+
+Swap it for the real icon whenever ready. Note: Docker's whale (Moby Dock) is a Docker,
+Inc. trademark; permissively-licensed icon sets cover the artwork but not the mark, so any
+Docker-branded icon here is a deliberate product/trademark decision — replace this file and
+update this credit accordingly.
