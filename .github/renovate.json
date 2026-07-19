@@ -1,0 +1,24 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>schmonz/mavericks-shared-cmake"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^components/[^/]+/version$"],
+      "matchStrings": ["REPO=(?<packageName>\\S+)\\.git\\nREF=(?<currentValue>\\S+)"],
+      "datasourceTemplate": "git-refs",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.github/.+\\.ya?ml$"],
+      "matchStrings": ["(?<currentDigest>[0-9a-f]{40})\\s*#\\s*mavericks-shared-cmake"],
+      "currentValueTemplate": "main",
+      "depNameTemplate": "mavericks-shared-cmake",
+      "packageNameTemplate": "https://github.com/schmonz/mavericks-shared-cmake",
+      "datasourceTemplate": "git-refs"
+    }
+  ]
+}

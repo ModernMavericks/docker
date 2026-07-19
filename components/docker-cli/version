@@ -1,0 +1,2 @@
+REPO=https://github.com/docker/cli.git
+REF=v29.6.2

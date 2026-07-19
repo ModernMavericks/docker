@@ -1,0 +1,14 @@
+# scratch build clone from the go126 proof-of-concept
+cli-build/
+
+# build outputs and fetched-dependency caches (any cmake -B <dir> name)
+build*/
+.srccache/
+dist/
+.sdk-cache/
+.sparkle-cache/
+.ed25519-cache/
+
+# macOS turds
+.DS_Store
+._*

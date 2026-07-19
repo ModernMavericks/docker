@@ -1,0 +1,269 @@
+cmake_minimum_required(VERSION 3.15)
+
+# Single source of truth for the product version (feeds .pkg name + release tag later). NOT passed to
+# project(VERSION ...): the mavericks scheme (e.g. 29.6.2-mavericks.1) is not a valid CMake version, and
+# nothing here needs PROJECT_VERSION -- MVD_VERSION carries it. (Mirrors mavericks-swift/golang.)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" MVD_VERSION LIMIT_COUNT 1)
+project(mavericks_docker LANGUAGES NONE)
+# LANGUAGES NONE: nothing is compiled natively. The real 10.9/x86_64 enforcement is
+# the go build flags below + the compat_guard gate, NOT CMake's compiler vars.
+set(CMAKE_OSX_DEPLOYMENT_TARGET 10.9)
+set(CMAKE_OSX_ARCHITECTURES x86_64)
+
+# Build-mode detection at configure time. "iso" = Docker-driven boot2docker.iso build
+# (its own preset; no Go/SDK, no native/cross). Otherwise: "native" = compiling ON
+# Mavericks 10.9 (pkgsrc go126 present), "cross" = a modern host cross-compiling for 10.9.
+if(MVD_EXPECTED_MODE STREQUAL "iso")
+  set(MVD_MODE "iso")
+else()
+  set(MVD_MODE "cross")
+  # Native 10.9 Go toolchain. Prefer the mavericks-golang native .pkg (/usr/local/mavericks-go/go126):
+  # its go.env ships the CC wrapper the build relies on (SDK + target flags + legacy shim). pkgsrc go126
+  # (/opt/pkg/go126) is a fallback that only works once that wrapper is upstreamed into it.
+  set(MVD_NATIVE_GO "")
+  foreach(_cand "/usr/local/mavericks-go/go126/bin/go" "/opt/pkg/go126/bin/go")
+    if(EXISTS "${_cand}")
+      set(MVD_NATIVE_GO "${_cand}")
+      break()
+    endif()
+  endforeach()
+  if(MVD_NATIVE_GO)
+    execute_process(COMMAND sw_vers -productVersion
+      OUTPUT_VARIABLE _osv OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_osv MATCHES "^10\\.9\\.")
+      set(MVD_MODE "native")
+    endif()
+  endif()
+endif()
+message(STATUS "mavericks-docker ${MVD_VERSION} — build: ${MVD_MODE}")
+
+# Require a per-mode preset: nothing may configure into an unqualified "build/" that
+# can't tell native from cross (and would clobber the synced tree). The presets set
+# MVD_EXPECTED_MODE + a distinct binaryDir (build-native / build-cross).
+if(NOT DEFINED MVD_EXPECTED_MODE)
+  message(FATAL_ERROR
+    "Configure via a preset: 'cmake --preset native' on Mavericks, or "
+    "'cmake --preset cross' on a modern host. Direct 'cmake -B <dir>' is disabled.")
+endif()
+# And fail fast if a preset is used on the wrong machine.
+if(NOT MVD_EXPECTED_MODE STREQUAL MVD_MODE)
+  message(FATAL_ERROR "preset expects a '${MVD_EXPECTED_MODE}' build but this machine "
+    "does a '${MVD_MODE}' build — wrong preset for this host.")
+endif()
+
+if(NOT MVD_MODE STREQUAL "iso")
+  # Shared machinery: the build-artifact gate scripts (compat_guard, sdk_coverage). The 10.9 SDK, the
+  # target flags (-arch/-isysroot/-mmacosx-version-min), and the legacy-support shim are ALL supplied by
+  # the go126 toolchain's default CC wrapper (its $GOROOT/go.env) -- so the build needs none of that here.
+  # (sdk_coverage fetches its own reference SDK on demand via --fetch-script.)
+  find_package(MavericksSharedCMake REQUIRED)
+
+  # The Go compiler: go126-cross on PATH (cross) or the mavericks-golang native go126 .pkg (native). Both
+  # ship the CC wrapper as the default CC in go.env, so a plain `go build` targets darwin/amd64 10.9
+  # correctly and links the legacy shim. (native therefore REQUIRES the .pkg toolchain, not pkgsrc go126.)
+  if(MVD_MODE STREQUAL "native")
+    set(MVD_GO "${MVD_NATIVE_GO}")
+  else()
+    set(MVD_GO "go")
+  endif()
+endif()
+
+# Read a component's REPO/REF pin from components/<name>/version.
+function(mvd_read_pin dir out_repo out_ref)
+  file(STRINGS "${dir}/version" _lines)
+  foreach(_l IN LISTS _lines)
+    if(_l MATCHES "^REPO=(.+)$")
+      set(_repo "${CMAKE_MATCH_1}")
+    elseif(_l MATCHES "^REF=(.+)$")
+      set(_ref "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+  set(${out_repo} "${_repo}" PARENT_SCOPE)
+  set(${out_ref}  "${_ref}"  PARENT_SCOPE)
+endfunction()
+
+include(ExternalProject)
+enable_testing()
+
+# --- iso mode: Docker-driven boot2docker.iso. No Go/SDK; requires a Docker daemon. ---
+set(MVD_SRC_CACHE "${CMAKE_SOURCE_DIR}/.srccache" CACHE PATH
+    "Shared cache dir for pinned dependency source clones")
+if(MVD_MODE STREQUAL "iso")
+  execute_process(COMMAND docker version
+    RESULT_VARIABLE _dv OUTPUT_QUIET ERROR_QUIET)
+  if(NOT _dv EQUAL 0)
+    message(FATAL_ERROR "iso mode needs a reachable Docker daemon (`docker version` failed)")
+  endif()
+
+  mvd_read_pin("${CMAKE_SOURCE_DIR}/components/boot2docker" B2D_REPO B2D_REF)
+  set(B2D_SRC "${MVD_SRC_CACHE}/boot2docker-${B2D_REF}")
+  set(B2D_OUT "${CMAKE_BINARY_DIR}/boot2docker")
+  set(B2D_ISO "${B2D_OUT}/boot2docker.iso")
+  ExternalProject_Add(boot2docker
+    SOURCE_DIR       "${B2D_SRC}"
+    DOWNLOAD_COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/clone_pinned.sh"
+                       "${B2D_REPO}" "${B2D_REF}" "${B2D_SRC}"
+    UPDATE_COMMAND   ""
+    CONFIGURE_COMMAND ""
+    BUILD_IN_SOURCE  TRUE
+    BUILD_COMMAND    sh "${CMAKE_SOURCE_DIR}/cmake/build_boot2docker.sh"
+                       <SOURCE_DIR> "${B2D_OUT}" "${B2D_REF}"
+    INSTALL_COMMAND  ""
+    BUILD_BYPRODUCTS "${B2D_ISO}"
+  )
+
+  # Gates.
+  add_test(NAME iso_fetch_verify
+    COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/iso_fetch_verify.sh"
+               "${CMAKE_SOURCE_DIR}/components/boot2docker")
+  add_test(NAME iso_fingerprint
+    COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/iso_fingerprint.sh" compare
+               "${CMAKE_SOURCE_DIR}/cmake/characterization/boot2docker" "${B2D_ISO}")
+  add_test(NAME iso_boot_proof
+    COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/iso_boot_proof.sh" "${B2D_ISO}")
+  set_tests_properties(iso_boot_proof PROPERTIES SKIP_RETURN_CODE 77)
+
+  # Self-contained unit tests for the iso scripts.
+  foreach(t boot2docker_pin_test boot2docker_build_script_test iso_fingerprint_test
+            iso_fetch_verify_test iso_boot_proof_test boot2docker_ci_test)
+    add_test(NAME ${t} COMMAND sh "${CMAKE_SOURCE_DIR}/tests/${t}.sh")
+  endforeach()
+
+  return()  # iso mode defines nothing from the Mac pipeline below
+endif()
+
+# --- component builds, gates, and unit tests ---
+# The Go components are compiled by the go126 toolchain, whose default CC wrapper (in its $GOROOT/go.env)
+# supplies the 10.9 SDK + target flags + the legacy-support shim + -Wl,-U weak-symbol allowances on the
+# external link. So there is no legacy-support build here, and each build_*.sh takes only source/out/go/ref.
+# compat_guard + sdk_coverage below are the arbiters that the result is actually 10.9-correct.
+mvd_read_pin("${CMAKE_SOURCE_DIR}/components/docker-cli" DC_REPO DC_REF)
+set(DC_OUT     "${CMAKE_BINARY_DIR}/docker-cli")
+set(DOCKER_BIN "${DC_OUT}/docker")
+set(DC_SRC     "${MVD_SRC_CACHE}/docker-cli-${DC_REF}")
+ExternalProject_Add(docker_cli
+  SOURCE_DIR       "${DC_SRC}"
+  DOWNLOAD_COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/clone_pinned.sh"
+                     "${DC_REPO}" "${DC_REF}" "${DC_SRC}"
+  UPDATE_COMMAND   ""
+  BUILD_IN_SOURCE  TRUE
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND    sh "${CMAKE_SOURCE_DIR}/cmake/build_docker_cli.sh"
+                     <SOURCE_DIR> "${DC_OUT}" "${MVD_GO}" "${DC_REF}"
+  INSTALL_COMMAND  ""
+  BUILD_BYPRODUCTS "${DOCKER_BIN}"
+)
+
+# docker-machine (GOPATH/dep era: no go.mod, vendored). Cloned into a GOPATH-shaped path
+# so GO111MODULE=off can build it. The toolchain's CC wrapper handles the target + legacy shim.
+mvd_read_pin("${CMAKE_SOURCE_DIR}/components/docker-machine" DM_REPO DM_REF)
+set(DM_GOPATH   "${MVD_SRC_CACHE}/docker-machine-${DM_REF}")
+set(DM_SRC      "${DM_GOPATH}/src/github.com/docker/machine")
+set(DM_OUT      "${CMAKE_BINARY_DIR}/docker-machine")
+set(MACHINE_BIN "${DM_OUT}/docker-machine")
+ExternalProject_Add(docker_machine
+  SOURCE_DIR       "${DM_SRC}"
+  DOWNLOAD_COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/clone_pinned.sh"
+                     "${DM_REPO}" "${DM_REF}" "${DM_SRC}"
+  UPDATE_COMMAND   ""
+  BUILD_IN_SOURCE  TRUE
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND    sh "${CMAKE_SOURCE_DIR}/cmake/build_docker_machine.sh"
+                     <SOURCE_DIR> "${DM_OUT}" "${MVD_GO}" "${DM_GOPATH}"
+  INSTALL_COMMAND  ""
+  BUILD_BYPRODUCTS "${MACHINE_BIN}"
+)
+
+# docker-compose (Compose v2; a go.mod module, not vendored). Simpler than docker-machine:
+# a normal module build (deps from the shared module cache); the toolchain wrapper handles the link.
+mvd_read_pin("${CMAKE_SOURCE_DIR}/components/docker-compose" CO_REPO CO_REF)
+set(CO_SRC      "${MVD_SRC_CACHE}/docker-compose-${CO_REF}")
+set(CO_OUT      "${CMAKE_BINARY_DIR}/docker-compose")
+set(COMPOSE_BIN "${CO_OUT}/docker-compose")
+ExternalProject_Add(docker_compose
+  SOURCE_DIR       "${CO_SRC}"
+  DOWNLOAD_COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/clone_pinned.sh"
+                     "${CO_REPO}" "${CO_REF}" "${CO_SRC}"
+  UPDATE_COMMAND   ""
+  BUILD_IN_SOURCE  TRUE
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND    sh "${CMAKE_SOURCE_DIR}/cmake/build_docker_compose.sh"
+                     <SOURCE_DIR> "${CO_OUT}" "${MVD_GO}" "${CO_REF}"
+  INSTALL_COMMAND  ""
+  BUILD_BYPRODUCTS "${COMPOSE_BIN}"
+)
+
+# lazydocker (terminal UI for Docker; a go.mod module, root main package). Same module build as compose.
+mvd_read_pin("${CMAKE_SOURCE_DIR}/components/lazydocker" LD_REPO LD_REF)
+set(LD_SRC   "${MVD_SRC_CACHE}/lazydocker-${LD_REF}")
+set(LD_OUT   "${CMAKE_BINARY_DIR}/lazydocker")
+set(LAZY_BIN "${LD_OUT}/lazydocker")
+ExternalProject_Add(lazydocker
+  SOURCE_DIR       "${LD_SRC}"
+  DOWNLOAD_COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/clone_pinned.sh"
+                     "${LD_REPO}" "${LD_REF}" "${LD_SRC}"
+  UPDATE_COMMAND   ""
+  BUILD_IN_SOURCE  TRUE
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND    sh "${CMAKE_SOURCE_DIR}/cmake/build_lazydocker.sh"
+                     <SOURCE_DIR> "${LD_OUT}" "${MVD_GO}" "${LD_REF}"
+  INSTALL_COMMAND  ""
+  BUILD_BYPRODUCTS "${LAZY_BIN}"
+)
+
+# Fail-closed build-artifact gates (run after `cmake --build`).
+add_test(NAME compat_guard
+  COMMAND sh "${MavericksSharedCMake_SCRIPTS}/compat_guard.sh" "${DOCKER_BIN}")
+add_test(NAME sdk_coverage
+  COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/sdk_coverage.sh"
+             --fetch-script "${MavericksSharedCMake_SCRIPTS}/fetch_10_9_sdk.sh"
+             "${DOCKER_BIN}")
+add_test(NAME characterize
+  COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/characterize_build.sh" compare
+             "${CMAKE_SOURCE_DIR}/cmake/characterization/docker-cli" "${DOCKER_BIN}")
+# characterize reads the binary's gomod via `go version -m`; use the SAME go that
+# built it (MVD_GO), not whatever `go` is on PATH.
+set_tests_properties(characterize PROPERTIES ENVIRONMENT "GO=${MVD_GO}")
+
+# docker-machine through the same 10.9-safety gates.
+add_test(NAME compat_guard_machine
+  COMMAND sh "${MavericksSharedCMake_SCRIPTS}/compat_guard.sh" "${MACHINE_BIN}")
+add_test(NAME sdk_coverage_machine
+  COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/sdk_coverage.sh"
+             --fetch-script "${MavericksSharedCMake_SCRIPTS}/fetch_10_9_sdk.sh"
+             "${MACHINE_BIN}")
+# docker-compose through the same 10.9-safety gates.
+add_test(NAME compat_guard_compose
+  COMMAND sh "${MavericksSharedCMake_SCRIPTS}/compat_guard.sh" "${COMPOSE_BIN}")
+add_test(NAME sdk_coverage_compose
+  COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/sdk_coverage.sh"
+             --fetch-script "${MavericksSharedCMake_SCRIPTS}/fetch_10_9_sdk.sh"
+             "${COMPOSE_BIN}")
+# lazydocker through the same 10.9-safety gates.
+add_test(NAME compat_guard_lazydocker
+  COMMAND sh "${MavericksSharedCMake_SCRIPTS}/compat_guard.sh" "${LAZY_BIN}")
+add_test(NAME sdk_coverage_lazydocker
+  COMMAND sh "${CMAKE_SOURCE_DIR}/cmake/sdk_coverage.sh"
+             --fetch-script "${MavericksSharedCMake_SCRIPTS}/fetch_10_9_sdk.sh"
+             "${LAZY_BIN}")
+
+# Unit tests (script behavior + output invariants). Output-asserting ones take the
+# built artifact path; self-contained ones run from the source tree.
+add_test(NAME docker_cli_unit
+  COMMAND sh "${CMAKE_SOURCE_DIR}/tests/docker_cli_test.sh" "${DOCKER_BIN}")
+# These exercise the gate scripts against the built binary -> pass DOCKER_BIN so they
+# work with any build dir (cmake -B <dir>), not a hardcoded build/.
+add_test(NAME compat_guard_test
+  COMMAND sh "${CMAKE_SOURCE_DIR}/tests/compat_guard_test.sh" "${DOCKER_BIN}" "${MavericksSharedCMake_SCRIPTS}/compat_guard.sh")
+add_test(NAME sdk_coverage_test
+  COMMAND sh "${CMAKE_SOURCE_DIR}/tests/sdk_coverage_test.sh" "${DOCKER_BIN}"
+             "${MavericksSharedCMake_SCRIPTS}/fetch_10_9_sdk.sh")
+add_test(NAME characterize_test
+  COMMAND sh "${CMAKE_SOURCE_DIR}/tests/characterize_test.sh" "${DOCKER_BIN}")
+# Self-contained (no built binary needed).
+foreach(t scaffold_test renovate_test docker_compose_test)
+  add_test(NAME ${t} COMMAND sh "${CMAKE_SOURCE_DIR}/tests/${t}.sh")
+endforeach()
+add_test(NAME fetch_sdk_test
+  COMMAND sh "${CMAKE_SOURCE_DIR}/tests/fetch_sdk_test.sh" "${MavericksSharedCMake_SCRIPTS}/fetch_10_9_sdk.sh")
+set_tests_properties(characterize_test PROPERTIES ENVIRONMENT "GO=${MVD_GO}")

@@ -1,0 +1,17 @@
+# Undefined imports allowed to be absent on 10.9 because Go runtime-guards them
+# behind an OS-version check and never calls them on 10.9 (dynamic_lookup).
+_SecTrustEvaluateWithError
+_SecTrustCopyCertificateChain
+# osinit_hack_trampoline references this (absent < macOS 10.12). Safe only because
+# the go126 patch-src_runtime_sys__darwin.go version-guards the call so it never
+# runs on 10.9; imported but never bound. Remove this line if that patch is dropped.
+_notify_is_valid_token
+# Same osinit_hack area (fork+exec-hang workaround). The go126 toolchain's CC wrapper adds -Wl,-U for it;
+# version-guarded so it never binds on 10.9. Defensive: not every binary emits the ref.
+_xpc_date_create_from_current
+# Fundamental libc symbols that ARE resolved at runtime on 10.9 (verified: the binary
+# launches and runs — memcpy is used pervasively, so a missing bind would fault at
+# once) but are absent from the pinned SDK's stub-dylib exports (the SDK ships them as
+# compiler builtins/inlines, not stub symbols). dynamic_lookup binds them from the
+# runtime libSystem. Surfaced by compose v2; docker-cli/machine don't emit the ref.
+_memcpy

@@ -1,0 +1,60 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "native",
+      "displayName": "native — build on Mavericks 10.9 (system clang)",
+      "binaryDir": "${sourceDir}/build-native",
+      "cacheVariables": { "MVD_EXPECTED_MODE": "native" }
+    },
+    {
+      "name": "cross",
+      "displayName": "cross — build for Mavericks 10.9 on a modern host",
+      "binaryDir": "${sourceDir}/build-cross",
+      "cacheVariables": { "MVD_EXPECTED_MODE": "cross" }
+    },
+    {
+      "name": "iso",
+      "displayName": "iso — build boot2docker.iso via Docker (box or linux)",
+      "binaryDir": "${sourceDir}/build-iso",
+      "cacheVariables": { "MVD_EXPECTED_MODE": "iso" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "native", "configurePreset": "native" },
+    { "name": "cross", "configurePreset": "cross" },
+    { "name": "iso", "configurePreset": "iso" }
+  ],
+  "testPresets": [
+    { "name": "native", "configurePreset": "native", "output": { "outputOnFailure": true } },
+    { "name": "cross", "configurePreset": "cross", "output": { "outputOnFailure": true } },
+    { "name": "iso", "configurePreset": "iso", "output": { "outputOnFailure": true } }
+  ],
+  "workflowPresets": [
+    {
+      "name": "native",
+      "steps": [
+        { "type": "configure", "name": "native" },
+        { "type": "build", "name": "native" },
+        { "type": "test", "name": "native" }
+      ]
+    },
+    {
+      "name": "cross",
+      "steps": [
+        { "type": "configure", "name": "cross" },
+        { "type": "build", "name": "cross" },
+        { "type": "test", "name": "cross" }
+      ]
+    },
+    {
+      "name": "iso",
+      "steps": [
+        { "type": "configure", "name": "iso" },
+        { "type": "build", "name": "iso" },
+        { "type": "test", "name": "iso" }
+      ]
+    }
+  ]
+}
