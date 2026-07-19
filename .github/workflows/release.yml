@@ -1,0 +1,211 @@
+name: release
+
+# Build the 10.9-compatible docker toolchain (CLI + Compose + Machine) on macos-26, build the
+# boot2docker.iso on Linux, build the Sparkle updater, assemble + sign the product .pkg, and attach
+# the .pkg + signed appcast to a GitHub Release on v* tags.
+#
+# RELEASE GATING mirrors mavericks-swift: CI proves the build succeeds and the gates pass, but a
+# modern runner is structurally blind to 10.9-only bugs, so every release publishes as a PRERELEASE.
+# Acceptance is a MANUAL real-10.9 boot-test (install the .pkg, boot the iso, run the updater); once
+# it passes you promote the GitHub prerelease to a full release, which is what /latest/ (and therefore
+# the Sparkle appcast feed) resolves to.
+#
+# No PR merge gate. Nothing reaches users until the manual box boot-test blesses a prerelease, so we
+# don't block merges -- the push-to-main build is a SIGNAL (a bump that breaks the build/gates shows red
+# on main, fix before cutting a prerelease), not a barrier. (Also: a cloud PR gate can't validate the
+# iso anyway -- that needs the box -- so gating boot2docker bumps on it would wedge them forever.)
+
+on:
+  push:
+    branches: [main]        # signal: build+gate every main push (surfaces a bump that broke something)
+    tags: ['v*']            # tags additionally package, sign, and publish a prerelease
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Superseded runs cancel on the same ref: a PR's new commit cancels its prior run, and rapid main
+# merges cancel superseded main builds. Each tag is a unique ref, so a publish build is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Shared 10.9 build machinery (find_package(MavericksSharedCMake) + the hoisted packaging helpers).
+  # Pinned by SHA for reproducible builds. Bump deliberately to pull shared-machinery changes.
+  MSC_REF: 504839297d332fe2a0fc8e89b230e98c5480257f  # mavericks-shared-cmake
+
+jobs:
+  build-macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      # shared-cmake installs itself via its own action (HTTPS via the runner token). The @<sha> matches
+      # MSC_REF above (kept for the SDK cache key); consumed thereafter via find_package.
+      - name: Install mavericks-shared-cmake
+        uses: schmonz/mavericks-shared-cmake/.github/actions/install@504839297d332fe2a0fc8e89b230e98c5480257f  # mavericks-shared-cmake
+
+      - name: Version = VERSION file (tag must match)
+        id: ver
+        run: |
+          VER=$(cat VERSION)
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$VER" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} != v$VER (VERSION file)"; exit 1; fi
+
+      # The 10.9-correct Go toolchain (patched mavericks-golang cross .pkg; see the comment history).
+      - name: Install patched Go (mavericks-golang cross toolchain)
+        env:
+          GO_PKG_REF:    v1.26.4-mavericks.2  # schmonz/mavericks-golang release tag
+          GO_PKG_SHA256: cd7741b41587d6bec2ee0cbf368f3a75b51aae0e449d671fe6ec8a78717bb11c
+        run: |
+          ver="${GO_PKG_REF#v}"
+          pkg="mavericks-go126-cross-${ver}-darwin-arm64.pkg"
+          curl -fL --retry 3 -o "$pkg" \
+            "https://github.com/schmonz/mavericks-golang/releases/download/${GO_PKG_REF}/${pkg}"
+          echo "${GO_PKG_SHA256}  ${pkg}" | shasum -a 256 -c -
+          sudo installer -pkg "$pkg" -target /
+          echo "/usr/local/mavericks-go/go126-cross/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm the patched cross toolchain is on PATH
+        run: |
+          test "$(command -v go)" = /usr/local/mavericks-go/go126-cross/bin/go
+          go version
+
+      - name: Cache the MacOSX10.9 SDK
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.sdk-cache
+          key: macosx10.9-sdk-${{ env.MSC_REF }}
+
+      - name: Build + gate (the SAME cmake build the Tahoe dry run runs)
+        env:
+          MAVERICKS_SDK_CACHE: ${{ github.workspace }}/.sdk-cache
+        run: |
+          cmake --preset cross
+          cmake --build --preset cross
+          ctest --preset cross
+
+      # Build the Sparkle updater .app + native signer on every build (catches updater breaks on PRs).
+      # The updater must NOT link any docker product (self-update circularity); its own binary is named
+      # MavericksDockerUpdater, so skip line 1 of otool before checking for a docker linkage.
+      - name: Build the Sparkle updater (+ signer; must not link docker)
+        run: |
+          SH="$HOME/.local/share/cmake/MavericksSharedCMake/scripts"
+          cmake -S updater -B build-updater -DMVD_SPARKLE_FRAMEWORK="$(sh "$SH/fetch_sparkle.sh")"
+          cmake --build build-updater
+          BIN=build-updater/MavericksDockerUpdater.app/Contents/MacOS/MavericksDockerUpdater
+          otool -L "$BIN" | tee /tmp/o.txt
+          if otool -L "$BIN" | tail -n +2 | grep -iq docker; then
+            echo "::error::updater links a docker product (self-update circularity)"; exit 1; fi
+
+      # On tags: bundle the packaging inputs into ONE tarball so executable bits (binaries, the .app's
+      # Mach-Os, the signer) survive the artifact round-trip -- artifacts otherwise drop file modes.
+      - name: Stage + upload packaging inputs
+        if: github.ref_type == 'tag'
+        run: |
+          export COPYFILE_DISABLE=1
+          mkdir -p stage
+          cp build-cross/docker-cli/docker            stage/docker
+          cp build-cross/docker-compose/docker-compose stage/docker-compose
+          cp build-cross/docker-machine/docker-machine stage/docker-machine
+          cp build-cross/lazydocker/lazydocker        stage/lazydocker
+          cp build-updater/mavericks_sign_update      stage/mavericks_sign_update
+          cp -R build-updater/MavericksDockerUpdater.app stage/MavericksDockerUpdater.app
+          find stage -name '._*' -delete 2>/dev/null || true
+          tar -C stage -czf packaging-inputs.tgz .
+      - name: Upload packaging inputs (tags only)
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaging-inputs
+          path: packaging-inputs.tgz
+
+  # boot2docker.iso on native Linux/Docker (macos-26 can't build it). We only BUILD the iso here for
+  # the .pkg. The iso reproducibility gates (iso_fetch_verify / iso_fingerprint) and the boot-proof are
+  # owned by boot2docker.yml + the box -- running them here would duplicate that and couple the release
+  # to boot2docker baseline maintenance. Acceptance for the shipped iso is the manual real-10.9 boot-test.
+  build-iso:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the boot2docker iso (same cmake iso build the box runs)
+        run: |
+          cmake --preset iso
+          cmake --build --preset iso
+      - uses: actions/upload-artifact@v7
+        with:
+          name: boot2docker-iso
+          path: build-iso/boot2docker/boot2docker.iso
+
+  # Assemble + sign the product .pkg and render the signed appcast. Needs the mac binaries/updater and
+  # the iso; runs on macos-26 for pkgbuild/productbuild.
+  package:
+    if: github.ref_type == 'tag'
+    needs: [build-macos, build-iso]
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install mavericks-shared-cmake
+        uses: schmonz/mavericks-shared-cmake/.github/actions/install@504839297d332fe2a0fc8e89b230e98c5480257f  # mavericks-shared-cmake
+      - uses: actions/download-artifact@v8
+        with: { name: packaging-inputs, path: dl }
+      - uses: actions/download-artifact@v8
+        with: { name: boot2docker-iso, path: iso }
+
+      - name: Assemble + sign the .pkg, render the appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          [ -n "$SPARKLE_PRIVATE_KEY" ] || { echo "::error::SPARKLE_PRIVATE_KEY secret not set"; exit 1; }
+          SH="$HOME/.local/share/cmake/MavericksSharedCMake/scripts"
+          VER=$(cat VERSION)
+          mkdir -p in dist
+          tar -C in -xzf dl/packaging-inputs.tgz      # restores executable bits
+          PKG="dist/mavericks-docker-$VER.pkg"
+
+          MSC_SCRIPTS="$SH" sh cmake/package_pkg.sh --out "$PKG" --version "$VER" \
+            --docker in/docker --compose in/docker-compose --machine in/docker-machine \
+            --lazydocker in/lazydocker --iso iso/boot2docker.iso \
+            --updater-app in/MavericksDockerUpdater.app \
+            --docked payload/docked --sync-helper payload/mavericks-docker-sync-image \
+            --readme payload/README.txt \
+            --resources cmake/resources --welcome Welcome.html
+
+          # Sign the .pkg (native signer from mavericks_add_signer) + render the signed appcast. The
+          # enclosure points at the versioned release asset; the client feed is /latest/ (prereleases
+          # excluded), so nothing auto-updates until this prerelease is promoted to a full release.
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v$VER/$(basename "$PKG")"
+          SPARKLE_PRIVATE_KEY="$SPARKLE_PRIVATE_KEY" sh "$SH/sign_and_appcast.sh" \
+            --signer in/mavericks_sign_update --channel-title "Docker for Mavericks" \
+            --version "$VER" --pkg-url "$URL" --min-os 10.9.5 \
+            --notes-file "docs/release-notes/v$VER.md" --pkg "$PKG" > dist/appcast.xml
+          (cd dist && shasum -a 256 ./*.pkg > SHA256SUMS)
+          echo "=== appcast.xml ==="; cat dist/appcast.xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mavericks-docker-pkg
+          path: |
+            dist/*.pkg
+            dist/appcast.xml
+            dist/SHA256SUMS
+
+  # All-or-nothing publish: the ONLY writer to Releases, gated on package. Always a PRERELEASE --
+  # promote to a full release by hand after the manual real-10.9 boot-test.
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { path: dist, merge-multiple: true }
+      - name: Publish PRERELEASE (promote after the manual 10.9 boot-test)
+        uses: softprops/action-gh-release@v3
+        with:
+          prerelease: true
+          files: |
+            dist/*.pkg
+            dist/appcast.xml
+            dist/SHA256SUMS
