@@ -16,6 +16,7 @@ setup() {
   export MAVERICKS_DOCKER_ISO="$WORK/iso"; : > "$MAVERICKS_DOCKER_ISO"
   export MAVERICKS_DOCKER_NONINTERACTIVE=1
   export MAVERICKS_DOCKER_PROFILES="$HOME/.bash_profile"
+  export MAVERICKS_DOCKER_MACHDIR="$WORK/machines"
   export MAVERICKS_DOCKER_FUSION_PRESENT=1
   export MAVERICKS_DOCKER_COMMON="$ROOT/payload/docker-machine-common.sh"
   export DM_LOG="$WORK/dm.args"; : > "$DM_LOG"
@@ -282,4 +283,23 @@ case_space_in_state_dir() {
 
 case_env_commented
 case_space_in_state_dir
+
+# --- Case: a legacy 'default' machine blocks auto-create and warns to migrate ---
+case_legacy_default() {
+  setup; make_docker
+  # No container-tools machine (status empty), but a legacy default dir exists.
+  cat > "$BIN/docker-machine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$DM_LOG"
+case "\$1" in status) exit 1 ;; esac
+EOF
+  chmod +x "$BIN/docker-machine"
+  mkdir -p "$MAVERICKS_DOCKER_MACHDIR/default"
+  sh "$BOOT" || fail "should exit 0 on legacy default"
+  grep -q 'create -d vmwarefusion' "$DM_LOG" && fail "must not create a 2nd VM when default exists"
+  grep -q 'migrate' "$OSA_LOG" || fail "expected a migrate notification"
+  teardown
+}
+
+case_legacy_default
 echo "docker_bootstrap_test: OK"
