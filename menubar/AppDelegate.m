@@ -1,22 +1,30 @@
 #import "AppDelegate.h"
+#import "MDController.h"
 
 @interface AppDelegate ()
 @property (strong) NSStatusItem *statusItem;
+@property (strong) MDController *controller;
 @end
 
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
   self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength];
-  // NSStatusItem.button is 10.10+; use the 10.9 API instead.
-  NSImage *icon = [self iconForState:@"stopped"];
-  icon.template = YES;
-  [self.statusItem setImage:icon];
+  self.controller = [[MDController alloc] init];
+  [self refresh];
 
   NSMenu *menu = [[NSMenu alloc] init];
   [menu addItemWithTitle:@"Quit Container Tools for Mavericks"
                   action:@selector(terminate:) keyEquivalent:@"q"];
   [self.statusItem setMenu:menu];
+}
+
+- (void)refresh {
+  NSString *state = [self.controller currentState];
+  NSImage *icon = [self iconForState:state];
+  icon.template = YES;
+  [self.statusItem setImage:icon];
+  [self.statusItem setToolTip:[@"Docker: " stringByAppendingString:state]];
 }
 
 // A simple template icon drawn in code (no asset files): filled disc = running,
