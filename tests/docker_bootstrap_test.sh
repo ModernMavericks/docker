@@ -70,4 +70,50 @@ case_fusion_absent() {
 }
 
 case_fusion_absent
+
+# --- Case: no machine -> create, then start ---
+case_create() {
+  setup; make_docker
+  # status: absent (exit 1) on first call, Stopped after create
+  cat > "$BIN/docker-machine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$DM_LOG"
+case "\$1" in
+  status) [ -f "$WORK/created" ] && { echo Stopped; exit 0; }; exit 1 ;;
+  create) : > "$WORK/created" ;;
+  start)  : > "$WORK/started" ;;
+  env)    echo 'export DOCKER_HOST="tcp://192.168.237.131:2376"'
+          echo "export DOCKER_CERT_PATH=\"$HOME/x\"" ;;
+esac
+EOF
+  chmod +x "$BIN/docker-machine"
+  sh "$BOOT" || fail "create path should exit 0"
+  grep -q 'create -d vmwarefusion' "$DM_LOG" || fail "expected docker-machine create"
+  grep -q "default" "$DM_LOG" || fail "create should target 'default'"
+  [ -f "$WORK/started" ] || fail "expected start after create"
+  teardown
+}
+
+# --- Case: stopped -> start (no create) ---
+case_start() {
+  setup; make_docker
+  cat > "$BIN/docker-machine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$DM_LOG"
+case "\$1" in
+  status) echo Stopped ;;
+  start)  : > "$WORK/started" ;;
+  env)    echo 'export DOCKER_HOST="tcp://192.168.237.131:2376"'
+          echo "export DOCKER_CERT_PATH=\"$HOME/x\"" ;;
+esac
+EOF
+  chmod +x "$BIN/docker-machine"
+  sh "$BOOT" || fail "start path should exit 0"
+  grep -q 'create' "$DM_LOG" && fail "must not create an existing machine"
+  [ -f "$WORK/started" ] || fail "expected start"
+  teardown
+}
+
+case_create
+case_start
 echo "docker_bootstrap_test: OK"

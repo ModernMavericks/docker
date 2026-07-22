@@ -32,12 +32,34 @@ fusion_present() {
   [ -d "/Applications/VMware Fusion.app" ] || command -v vmrun >/dev/null 2>&1
 }
 
+machine_status() { docker-machine status "$MACHINE" 2>/dev/null; }
+
+create_machine() {
+  log "creating machine 'default'"
+  if [ "${MVD_NONINTERACTIVE:-}" = 1 ]; then
+    docker-machine create -d vmwarefusion --vmwarefusion-boot2docker-url "$ISO" "$MACHINE" >>"$LOG" 2>&1
+  else
+    notify create "Container Tools for Mavericks" "Creating the Docker VM (one-time, ~1-2 min)..."
+    _cmd="docker-machine create -d vmwarefusion --vmwarefusion-boot2docker-url '$ISO' $MACHINE && '$SELF'"
+    osascript -e "tell application \"Terminal\" to do script \"$_cmd\"" >/dev/null 2>&1 || true
+    osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
+  fi
+}
+
 main() {
   if ! fusion_present; then
     log "VMware Fusion not found; skipping"
     notify fusion "Container Tools for Mavericks" "Install VMware Fusion to run the Docker VM."
     exit 0
   fi
+  _status=$(machine_status)
+  if [ -z "$_status" ]; then
+    create_machine
+    # Interactive create runs in a Terminal (chained to re-run SELF); nothing more to do now.
+    [ "${MVD_NONINTERACTIVE:-}" = 1 ] || exit 0
+    _status=$(machine_status)
+  fi
+  [ "$_status" = "Running" ] || docker-machine start "$MACHINE" >>"$LOG" 2>&1 || true
   exit 0
 }
 
