@@ -172,6 +172,65 @@ case_env_clean() {
 case_env_override
 case_env_clean
 
+# --- Case: interactive create -> Terminal do-script + lock acquired ---
+case_interactive_create() {
+  setup; make_docker
+  unset MVD_NONINTERACTIVE
+  cat > "$BIN/docker-machine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$DM_LOG"
+case "\$1" in status) exit 1 ;; esac
+EOF
+  chmod +x "$BIN/docker-machine"
+  sh "$BOOT" || fail "interactive create should exit 0"
+  grep -q 'do script' "$OSA_LOG" || fail "expected a Terminal do-script"
+  grep -q 'docker-machine create' "$OSA_LOG" || fail "Terminal must run docker-machine create"
+  [ -d "$MVD_STATE_DIR/creating.lock" ] || fail "interactive create must hold the lock"
+  teardown
+}
+
+# --- Case: create already in progress (fresh lock) -> no second create ---
+case_create_locked() {
+  setup; make_docker
+  cat > "$BIN/docker-machine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$DM_LOG"
+case "\$1" in status) exit 1 ;; esac
+EOF
+  chmod +x "$BIN/docker-machine"
+  mkdir -p "$MVD_STATE_DIR/creating.lock"
+  sh "$BOOT" || fail "should exit 0 when create locked"
+  grep -q 'create' "$DM_LOG" && fail "must not create while lock held"
+  grep -q 'docker-machine create' "$OSA_LOG" && fail "must not spawn create Terminal while lock held"
+  teardown
+}
+
+# --- Case: stale lock (>10 min) -> reclaimed, create proceeds ---
+case_stale_lock() {
+  setup; make_docker
+  cat > "$BIN/docker-machine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$DM_LOG"
+case "\$1" in
+  status) [ -f "$WORK/created" ] && { echo Stopped; exit 0; }; exit 1 ;;
+  create) : > "$WORK/created" ;;
+  start)  : > "$WORK/started" ;;
+  env)    echo 'export DOCKER_HOST="tcp://192.168.237.131:2376"'
+          echo "export DOCKER_CERT_PATH=\"$HOME/x\"" ;;
+esac
+EOF
+  chmod +x "$BIN/docker-machine"
+  mkdir -p "$MVD_STATE_DIR/creating.lock"
+  touch -t 200001010000 "$MVD_STATE_DIR/creating.lock"
+  sh "$BOOT" || fail "should exit 0 on stale lock"
+  grep -q 'create -d vmwarefusion' "$DM_LOG" || fail "stale lock must be reclaimed and create proceed"
+  teardown
+}
+
+case_interactive_create
+case_create_locked
+case_stale_lock
+
 # --- Case: packaging references are consistent ---
 case_packaging() {
   grep -q '/usr/local/bin/docker-machine-bootstrap' "$ROOT/payload/dev.modernmavericks.container-tools-machine.plist" \

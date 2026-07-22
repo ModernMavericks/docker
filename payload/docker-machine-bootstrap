@@ -12,6 +12,7 @@ ISO=${MVD_ISO:-/usr/local/share/modernmavericks/container-tools/boot2docker.iso}
 LOG=${MVD_LOG:-$HOME/Library/Logs/container-tools/bootstrap.log}
 STATE_DIR=${MVD_STATE_DIR:-$HOME/Library/Application Support/container-tools}
 PROFILES=${MVD_PROFILES:-$HOME/.bash_profile $HOME/.profile $HOME/.zshrc $HOME/.bashrc}
+LOCK="$STATE_DIR/creating.lock"
 
 log() {
   mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
@@ -34,13 +35,30 @@ fusion_present() {
 
 machine_status() { docker-machine status "$MACHINE" 2>/dev/null; }
 
+# True while a create is in flight. A lock older than 10 min is stale -> reclaim it.
+create_in_progress() {
+  [ -d "$LOCK" ] || return 1
+  _mt=$(stat -f %m "$LOCK" 2>/dev/null) || return 0
+  if [ $(( $(date +%s) - _mt )) -gt 600 ]; then
+    log "stale create lock; reclaiming"
+    rmdir "$LOCK" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
 create_machine() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  mkdir "$LOCK" 2>/dev/null || { log "create lock held; skipping create"; return 0; }
   log "creating machine 'default'"
   if [ "${MVD_NONINTERACTIVE:-}" = 1 ]; then
     docker-machine create -d vmwarefusion --vmwarefusion-boot2docker-url "$ISO" "$MACHINE" >>"$LOG" 2>&1
+    rmdir "$LOCK" 2>/dev/null || true
   else
     notify create "Container Tools for Mavericks" "Creating the Docker VM (one-time, ~1-2 min)..."
-    _cmd="docker-machine create -d vmwarefusion --vmwarefusion-boot2docker-url '$ISO' $MACHINE && '$SELF'"
+    # The Terminal releases the lock and re-runs SELF (to sync the context) only on a
+    # successful create; a failed create leaves the lock for the 10-min stale reclaim.
+    _cmd="docker-machine create -d vmwarefusion --vmwarefusion-boot2docker-url '$ISO' $MACHINE && rmdir '$LOCK' && '$SELF'"
     osascript -e "tell application \"Terminal\" to do script \"$_cmd\"" >/dev/null 2>&1 || true
     osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
   fi
@@ -80,6 +98,10 @@ main() {
   if ! fusion_present; then
     log "VMware Fusion not found; skipping"
     notify fusion "Container Tools for Mavericks" "Install VMware Fusion to run the Docker VM."
+    exit 0
+  fi
+  if create_in_progress; then
+    log "create already in progress; skipping this run"
     exit 0
   fi
   _status=$(machine_status)
