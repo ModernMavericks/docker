@@ -18,7 +18,9 @@ if docker-machine status "$OLD" 2>/dev/null | grep -q '^Running$'; then
 fi
 
 # Back up the files we edit in place (the mv of large files is reversible; seds are not).
-cp "$MACHDIR/$OLD/config.json" "$MACHDIR/$OLD/config.json.premigrate" 2>/dev/null || true
+# The config backup is mandatory — bail rather than do irreversible surgery without a net.
+cp "$MACHDIR/$OLD/config.json" "$MACHDIR/$OLD/config.json.premigrate" \
+  || { echo "migrate: could not back up config.json; aborting" >&2; exit 1; }
 [ -f "$MACHDIR/$OLD/$OLD.vmx" ] && cp "$MACHDIR/$OLD/$OLD.vmx" "$MACHDIR/$OLD/$OLD.vmx.premigrate" 2>/dev/null || true
 
 # 1. Rename the machine directory.
@@ -39,6 +41,7 @@ if [ -f "$d/config.json" ]; then
     -e "s|machines/$OLD|machines/$NEW|g" \
     -e "s|$OLD\\.\\([A-Za-z][A-Za-z]*\\)|$NEW.\\1|g" \
     -e "s|\"MachineName\": \"$OLD\"|\"MachineName\": \"$NEW\"|g" \
+    -e "s|\"Name\": \"$OLD\"|\"Name\": \"$NEW\"|g" \
     "$d/config.json"
 fi
 

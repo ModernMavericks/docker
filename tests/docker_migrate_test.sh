@@ -24,7 +24,8 @@ EOF
   # A fake legacy machine.
   d="$MAVERICKS_DOCKER_MACHDIR/default"; mkdir -p "$d"
   cat > "$d/config.json" <<EOF
-{ "MachineName": "default",
+{ "Name": "default",
+  "MachineName": "default",
   "StorePath": "$MAVERICKS_DOCKER_MACHDIR/default",
   "VMXPath": "$MAVERICKS_DOCKER_MACHDIR/default/default.vmx" }
 EOF
@@ -42,6 +43,7 @@ case_migrate() {
   [ -f "$nd/container-tools.vmdk" ] || fail "vmdk (data disk) renamed"
   [ -f "$nd/ca.pem" ] || fail "certs preserved"
   grep -q '"MachineName": "container-tools"' "$nd/config.json" || fail "config MachineName rewritten"
+  grep -q '"Name": "container-tools"' "$nd/config.json" || fail "config top-level Name rewritten"
   grep -q "machines/container-tools" "$nd/config.json" || fail "config StorePath rewritten"
   grep -q '/default\.vmx' "$nd/config.json" && fail "config still references default.vmx"
   grep -q 'displayName = "container-tools"' "$nd/container-tools.vmx" || fail "vmx displayName rewritten"
