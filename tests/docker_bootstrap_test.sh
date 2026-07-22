@@ -150,4 +150,25 @@ EOF
 
 case_context_create
 case_context_current
+
+# --- Case: leftover eval line in profile -> notify ---
+case_env_override() {
+  setup; make_dm; make_docker
+  printf '%s\n' 'eval "$(docker-machine env default)"' > "$HOME/.bash_profile"
+  MVD_TEST_STATUS=Running sh "$BOOT" || fail "should exit 0"
+  grep -q 'overrides' "$OSA_LOG" || fail "expected env-override notification"
+  teardown
+}
+
+# --- Case: clean profile -> no override notification ---
+case_env_clean() {
+  setup; make_dm; make_docker
+  printf '%s\n' 'export PS1="$ "' > "$HOME/.bash_profile"
+  MVD_TEST_STATUS=Running sh "$BOOT" || fail "should exit 0"
+  grep -q 'overrides' "$OSA_LOG" && fail "must not warn on a clean profile"
+  teardown
+}
+
+case_env_override
+case_env_clean
 echo "docker_bootstrap_test: OK"

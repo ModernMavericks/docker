@@ -65,6 +65,17 @@ sync_context() {
   docker context use "$CONTEXT" >>"$LOG" 2>&1 || true
 }
 
+warn_env_override() {
+  for _p in $PROFILES; do
+    [ -f "$_p" ] || continue
+    if grep -Eq 'docker-machine env|DOCKER_HOST=' "$_p" 2>/dev/null; then
+      notify envoverride "Container Tools for Mavericks" \
+        "A DOCKER_HOST line in $(basename "$_p") overrides the managed setup; remove it to use Container Tools for Mavericks."
+      return 0
+    fi
+  done
+}
+
 main() {
   if ! fusion_present; then
     log "VMware Fusion not found; skipping"
@@ -80,6 +91,7 @@ main() {
   fi
   [ "$_status" = "Running" ] || docker-machine start "$MACHINE" >>"$LOG" 2>&1 || true
   [ "$(machine_status)" = "Running" ] && sync_context
+  warn_env_override
   exit 0
 }
 
