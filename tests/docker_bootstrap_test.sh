@@ -171,4 +171,22 @@ case_env_clean() {
 
 case_env_override
 case_env_clean
+
+# --- Case: packaging references are consistent ---
+case_packaging() {
+  grep -q '/usr/local/bin/docker-machine-bootstrap' "$ROOT/payload/dev.modernmavericks.container-tools-machine.plist" \
+    || fail "plist must launch docker-machine-bootstrap"
+  grep -q 'docker-machine-ensure-default' "$ROOT/payload/dev.modernmavericks.container-tools-machine.plist" \
+    && fail "plist still references the old guard"
+  grep -q -- '--bootstrap' "$ROOT/cmake/package_pkg.sh" || fail "package_pkg.sh missing --bootstrap"
+  grep -q 'install -m 0755 "\$BOOT"' "$ROOT/cmake/package_pkg.sh" \
+    || fail "package_pkg.sh must install the bootstrap helper"
+  grep -q -- '--ensure-guard' "$ROOT/cmake/package_pkg.sh" && fail "package_pkg.sh still has --ensure-guard"
+  [ -f "$ROOT/payload/docker-machine-ensure-default" ] && fail "old guard file still present"
+  grep -q -- '--bootstrap payload/docker-machine-bootstrap' "$ROOT/.github/workflows/release.yml" \
+    || fail "release.yml must pass --bootstrap"
+  echo "  packaging-consistency OK"
+}
+
+case_packaging
 echo "docker_bootstrap_test: OK"

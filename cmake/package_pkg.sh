@@ -9,13 +9,13 @@
 #
 # Usage:
 #   package_pkg.sh --out PKG --version V --docker BIN --compose BIN --machine BIN --iso ISO \
-#     --updater-app APP.app --ensure-guard BIN --launch-agent PLIST \
+#     --updater-app APP.app --bootstrap BIN --launch-agent PLIST \
 #     [--msc-scripts DIR] [--resources DIR --welcome FILE]
 set -eu
 export COPYFILE_DISABLE=1
 
 OUT=""; VER=""; DOCKER=""; COMPOSE=""; MACHINE=""; LAZY=""; ISO=""; UPD_APP=""; DOCKED=""; SYNC=""
-GUARD=""; LAUNCHAGENT=""
+BOOT=""; LAUNCHAGENT=""
 MSC="${MSC_SCRIPTS:-}"; RES=""; WELCOME=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
     --updater-app) UPD_APP="$2"; shift 2;;
     --docked) DOCKED="$2"; shift 2;;
     --sync-helper) SYNC="$2"; shift 2;;
-    --ensure-guard) GUARD="$2"; shift 2;;
+    --bootstrap) BOOT="$2"; shift 2;;
     --launch-agent) LAUNCHAGENT="$2"; shift 2;;
     --msc-scripts) MSC="$2"; shift 2;;
     --resources) RES="$2"; shift 2;;
@@ -39,10 +39,10 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$OUT" ] && [ -n "$VER" ] && [ -n "$DOCKER" ] && [ -n "$COMPOSE" ] && [ -n "$MACHINE" ] \
   && [ -n "$LAZY" ] && [ -n "$ISO" ] && [ -n "$UPD_APP" ] && [ -n "$DOCKED" ] && [ -n "$SYNC" ] \
-  && [ -n "$GUARD" ] && [ -n "$LAUNCHAGENT" ] \
-  || { echo "package_pkg: need --out --version --docker --compose --machine --lazydocker --iso --updater-app --docked --sync-helper --ensure-guard --launch-agent" >&2; exit 2; }
+  && [ -n "$BOOT" ] && [ -n "$LAUNCHAGENT" ] \
+  || { echo "package_pkg: need --out --version --docker --compose --machine --lazydocker --iso --updater-app --docked --sync-helper --bootstrap --launch-agent" >&2; exit 2; }
 [ -n "$MSC" ] || { echo "package_pkg: MSC_SCRIPTS unset (install mavericks-shared-cmake, or pass --msc-scripts)" >&2; exit 2; }
-for f in "$DOCKER" "$COMPOSE" "$MACHINE" "$LAZY" "$ISO" "$DOCKED" "$SYNC" "$GUARD" "$LAUNCHAGENT"; do [ -f "$f" ] || { echo "package_pkg: missing input: $f" >&2; exit 1; }; done
+for f in "$DOCKER" "$COMPOSE" "$MACHINE" "$LAZY" "$ISO" "$DOCKED" "$SYNC" "$BOOT" "$LAUNCHAGENT"; do [ -f "$f" ] || { echo "package_pkg: missing input: $f" >&2; exit 1; }; done
 [ -d "$UPD_APP" ] || { echo "package_pkg: no updater .app: $UPD_APP" >&2; exit 1; }
 for h in stage_updater.sh set_install_floor.sh; do
   [ -f "$MSC/$h" ] || { echo "package_pkg: shared helper missing: $MSC/$h" >&2; exit 1; }
@@ -63,13 +63,13 @@ install -m 0755 "$MACHINE" "$stage/usr/local/bin/docker-machine"
 install -m 0755 "$LAZY"    "$stage/usr/local/bin/lazydocker"
 install -m 0755 "$DOCKED"  "$stage/usr/local/bin/docked"
 install -m 0755 "$SYNC"    "$stage/usr/local/bin/container-tools-sync-image"
-install -m 0755 "$GUARD"   "$stage/usr/local/bin/docker-machine-ensure-default"
+install -m 0755 "$BOOT"    "$stage/usr/local/bin/docker-machine-bootstrap"
 # Compose v2 as a CLI plugin (enables `docker compose`), plus a standalone `docker-compose` symlink.
 install -m 0755 "$COMPOSE" "$stage/usr/local/lib/docker/cli-plugins/docker-compose"
 ln -s ../lib/docker/cli-plugins/docker-compose "$stage/usr/local/bin/docker-compose"
 install -m 0644 "$ISO"    "$stage/usr/local/share/modernmavericks/container-tools/boot2docker.iso"
 
-# Optional VM auto-start: a per-user LaunchAgent (ships Disabled) driving the ensure-default guard.
+# Optional VM auto-start: a per-user LaunchAgent (ships Disabled) driving the bootstrap helper.
 # Off by default -- the user turns it on with `launchctl load -w`. root:wheel 0644 so launchd accepts it.
 mkdir -p "$stage/Library/LaunchAgents"
 install -m 0644 "$LAUNCHAGENT" "$stage/Library/LaunchAgents/dev.modernmavericks.container-tools-machine.plist"

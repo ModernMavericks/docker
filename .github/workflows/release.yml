@@ -163,7 +163,7 @@ jobs:
             --lazydocker in/lazydocker --iso iso/boot2docker.iso \
             --updater-app in/ContainerToolsUpdater.app \
             --docked payload/docked --sync-helper payload/container-tools-sync-image \
-            --ensure-guard payload/docker-machine-ensure-default \
+            --bootstrap payload/docker-machine-bootstrap \
             --launch-agent payload/dev.modernmavericks.container-tools-machine.plist \
             --resources cmake/resources --welcome Welcome.html
 

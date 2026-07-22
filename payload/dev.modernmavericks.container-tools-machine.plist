@@ -18,7 +18,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/docker-machine-ensure-default</string>
+    <string>/usr/local/bin/docker-machine-bootstrap</string>
   </array>
 
   <!-- Bring the VM up at login, then re-check every 60s (recovers after sleep/stop). -->
